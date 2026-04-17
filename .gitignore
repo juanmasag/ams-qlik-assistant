@@ -3,3 +3,5 @@ config/creds.json
 config/token.json
 config.json
 .env
+credentials.json
+token.json
