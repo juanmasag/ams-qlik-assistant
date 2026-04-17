@@ -5,3 +5,7 @@ config.json
 .env
 credentials.json
 token.json
+*.mp4
+*.wav
+__pycache__/
+~$*.docx

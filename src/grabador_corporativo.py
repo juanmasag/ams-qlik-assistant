@@ -10,6 +10,7 @@ import mss
 from datetime import datetime
 import soundcard as sc
 import warnings
+from main import procesar_reunion
 
 # Nuestros módulos personalizados (AQUÍ AGREGAMOS esta_video_procesado)
 from google_drive import subir_archivo_drive, obtener_o_crear_carpeta_raiz, esta_video_procesado
@@ -168,7 +169,7 @@ class GrabadorCorporativo:
                     return
                 
                 intentos += 1
-                time.sleep(20) # Esperamos 15 segundos antes de volver a preguntar
+                time.sleep(15) # Esperamos 15 segundos antes de volver a preguntar
                 
                 # Ajuste para larga duración: Solo mostramos mensaje cada 4 intentos (1 minuto exacto)
                 if intentos % 4 == 0:
@@ -183,9 +184,13 @@ class GrabadorCorporativo:
             print("❌ Error en la subida a Drive.")
 
     def _iniciar_analisis_gemini(self, file_id, link):
-        """Este será nuestro próximo gran paso: conectar con la IA."""
         print("🤖 [GEMINI]: Iniciando análisis de contenido y generación de documento...")
-        # (Aquí irá el código que creará el Google Doc con el resumen)
+        
+        # El archivo local sigue en nuestra carpeta principal
+        video_local = f"{self.filename_base}.mp4"
+        
+        # Le pasamos el mando al Director de Orquesta (main.py)
+        procesar_reunion(video_local, link)
 
     def iniciar(self):
         if not self.grabando:

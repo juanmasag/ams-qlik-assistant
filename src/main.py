@@ -17,36 +17,27 @@ from src.folder_manager import crear_estructura_ticket, inicializar_documento_re
 from src.doc_updater import actualizar_word_requerimiento
 
 def asegurar_string(dato):
-    """Convierte cualquier dato de la IA en string, manejando listas de Gemini 2.5."""
+    """Convierte cualquier dato de la IA en string, manejando listas."""
     if isinstance(dato, list):
         return "\n".join([str(item) for item in dato])
     return str(dato) if dato else ""
 
-def ejecutar_pipeline():
+def procesar_reunion(ruta_original, link_drive=""):
+    """
+    Función Maestra: Orquesta la IA, los documentos y el log de Sheets.
+    Recibe la ruta del video recién grabado y el link de Google Drive.
+    """
     # 3. CARGAMOS LA CONFIGURACIÓN Y EL PERFIL ACTIVO
     config = cargar_config()
     PERFIL_ACTIVO = config.get("PERFIL_ACTIVO", "GENERAL")
     perfil_data = config["PERFILES"].get(PERFIL_ACTIVO, config["PERFILES"]["GENERAL"])
     
-    folder_recordings = config["RUTAS_LOCALES"].get("RECORDINGS", "./data/recordings")
     sheet_name = perfil_data.get("GOOGLE_SHEET")
     
-    print(f"🚀 Iniciando Asistente v2.0 - Perfil: {PERFIL_ACTIVO}...\n")
-    
-    if not os.path.exists(folder_recordings):
-        os.makedirs(folder_recordings, exist_ok=True)
-        return
+    print(f"\n🚀 Iniciando Asistente v2.0 - Perfil: {PERFIL_ACTIVO}...")
+    print(f"🎬 Procesando video local: {os.path.basename(ruta_original)}")
 
-    archivos = [f for f in os.listdir(folder_recordings) if f.endswith(('.mp4', '.mkv'))]
-    if not archivos:
-        print(f"❌ No se encontraron videos nuevos en {folder_recordings}")
-        return
-
-    ruta_original = max([os.path.join(folder_recordings, f) for f in archivos], key=os.path.getmtime)
-    nombre_obs = os.path.basename(ruta_original)
-    print(f"🎬 Video detectado: {nombre_obs}")
-
-    # 4. TICKETS
+    # 4. SELECCIÓN DE TICKET (Interactivo)
     sheet = None
     tickets_pendientes = []
     ticket_seleccionado = None
@@ -80,13 +71,14 @@ def ejecutar_pipeline():
         app_manual = input("👉 Aplicación (opcional): ").strip()
         ticket_seleccionado = {"ID Ticket": "PENDIENTE", "Aplicacion": app_manual, "Título": tema_manual if tema_manual else "Relevamiento General"}
 
-    # 5. FASE DE PROCESAMIENTO
+    # 5. FASE DE PROCESAMIENTO IA (Envía el video local directamente a Gemini)
     print("\n--- INICIANDO FASE DE ANÁLISIS DE IA ---")
     minuta_final_json = ""
     respuestas_fragmentos = []
     id_ticket = str(ticket_seleccionado['ID Ticket'])
     
     try:
+        # Tu excelente función que evita el límite de tiempo de Gemini cortando el video en pedazos
         chunks = dividir_video(ruta_original, minutos_por_chunk=15)
         for i, chunk in enumerate(chunks):
             print(f"⚙️ Analizando fragmento {i+1}/{len(chunks)} con Gemini...")
@@ -135,13 +127,14 @@ def ejecutar_pipeline():
         print(f"\n❌ Error Crítico durante el análisis: {e}")
         return 
 
-    # 6. FASE DE ESCRITURA
+    # 6. FASE DE ESCRITURA Y DOCUMENTACIÓN
     print("\n--- INICIANDO FASE DE ESCRITURA ---")
     try:
         aplicacion_bruta = str(ticket_seleccionado.get('Aplicacion', '')).strip()
         titulo_bruto = str(ticket_seleccionado['Título'])
         titulo_para_carpeta = f"{aplicacion_bruta} - {titulo_bruto}" if aplicacion_bruta else titulo_bruto
         
+        # Crea carpetas físicas usando tu folder_manager
         ruta_raiz_drive = crear_estructura_ticket(id_ticket, titulo_para_carpeta, aplicacion_bruta)
         ruta_word_oficial = inicializar_documento_requerimiento(ruta_raiz_drive, id_ticket, titulo_para_carpeta)
 
@@ -153,22 +146,30 @@ def ejecutar_pipeline():
         nuevo_nombre_video = f"{nombre_dinamico}.mp4"
         
         try:
-            os.rename(ruta_original, os.path.join(folder_recordings, nuevo_nombre_video))
-        except: pass
+            # Renombramos el archivo local de "GRABACION_XXX" al formato corporativo
+            os.rename(ruta_original, nuevo_nombre_video)
+        except Exception as e:
+            print(f"⚠️ Aviso: No se pudo renombrar el video local ({e})")
 
         if ruta_word_oficial:
             actualizar_word_requerimiento(ruta_word_oficial, minuta_final_json, id_ticket, titulo_para_carpeta, fecha_reunion)
             ruta_md = os.path.join(ruta_raiz_drive, "01_Relevamiento", f"Minuta_{nombre_dinamico}.md")
-            with open(ruta_md, "w", encoding="utf-8") as f: f.write(minuta_final_json)
+            with open(ruta_md, "w", encoding="utf-8") as f: 
+                f.write(f"**Link del Video en la Nube:** {link_drive}\n\n")
+                f.write(minuta_final_json)
 
         if sheet and id_ticket != "PENDIENTE":
             registrar_log(sheet, [datetime.now().strftime("%Y-%m-%d %H:%M"), nuevo_nombre_video, "OK", "Procesado", f"Minuta_{nombre_dinamico}.md"])
         
         shutil.rmtree("data/temp", ignore_errors=True)
-        print(f"\n🎉 ¡Todo listo! Documentación creada en: {ruta_raiz_drive}")
+        print(f"\n🎉 ¡Todo listo! Documentación creada exitosamente en: {ruta_raiz_drive}")
 
     except Exception as e:
         print(f"\n❌ Error en escritura: {e}")
 
 if __name__ == "__main__":
-    ejecutar_pipeline()
+    print("ℹ️ Este módulo ahora funciona como Director de Orquesta y debe ser llamado por el grabador.")
+    # Prueba manual de emergencia
+    ruta = input("Para forzar una prueba, pega la ruta local de un video y presiona Enter (o deja vacío para salir): ").strip('"')
+    if ruta and os.path.exists(ruta):
+        procesar_reunion(ruta, "Link_de_Prueba")
