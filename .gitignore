@@ -1,0 +1,5 @@
+config/gmail_secret.json
+config/creds.json
+config/token.json
+config.json
+.env
