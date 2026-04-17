@@ -144,42 +144,44 @@ class GrabadorCorporativo:
         self._asegurar_en_nube(output_final)
 
     def _asegurar_en_nube(self, ruta_archivo):
-        # ESTADO 1: Local listo
-        print(f"\n✅ [VIDEO DISPONIBLE EN LOCAL]: {ruta_archivo}")
+        # --- CARRIL 1: ANÁLISIS DE IA (INMEDIATO) ---
+        # No esperamos a Drive. Gemini usa el archivo local que ya existe.
+        print("\n🤖 [GEMINI]: Iniciando análisis en segundo plano (usando archivo local)...")
+        # Creamos un hilo para que 'main.py' no bloquee el resto del programa
+        hilo_ia = threading.Thread(
+            target=procesar_reunion, 
+            args=(ruta_archivo, "Generando link en Drive...")
+        )
+        hilo_ia.start()
+
+        # --- CARRIL 2: NUBE (EN PARALELO) ---
+        print(f"✅ [VIDEO DISPONIBLE EN LOCAL]: {ruta_archivo}")
         print(f"🕒 [PROCESANDO EN DRIVE]: Subiendo archivo...")
 
         file_id, link = subir_archivo_drive(ruta_archivo, self.folder_id_drive)
         
         if file_id:
-            # ESTADO 2: Subido pero procesando
             print(f"✅ [SUBIDA EXITOSA]: El archivo ya está en la nube.")
-            print(f"🕒 [ESPERANDO A GEMINI]: Google Drive está procesando el video para habilitar la IA...")
+            print(f"🕒 [ESTADO DRIVE]: Google está procesando la vista previa del video...")
             
-            # Bucle de espera (Polling)
-            # Aumentamos a 400 intentos (aprox. 100 minutos de espera máxima)
+            # Bucle de espera solo para confirmar el link visual
             intentos = 0
             while intentos < 400: 
                 if esta_video_procesado(file_id):
-                    # ESTADO 3: Todo listo
-                    print(f"✅ [DRIVE PROCESADO]: El video ya es legible por la IA.")
+                    print(f"\n✅ [DRIVE PROCESADO]: El video ya se puede ver online.")
                     print(f"🔗 Link final: {link}")
-                    
-                    # AQUÍ LANZAREMOS EL ANÁLISIS DE GEMINI
-                    self._iniciar_analisis_gemini(file_id, link)
+                    # IMPORTANTE: Aquí ya no llamamos a iniciar_analisis_gemini 
+                    # porque ya lo lanzamos arriba en el Carril 1.
                     return
                 
                 intentos += 1
-                time.sleep(15) # Esperamos 15 segundos antes de volver a preguntar
+                time.sleep(15) 
                 
-                # Ajuste para larga duración: Solo mostramos mensaje cada 4 intentos (1 minuto exacto)
                 if intentos % 4 == 0:
                     minutos_espera = intentos // 4
-                    print(f"⏳ [REUNIÓN LARGA]: Google sigue procesando... ({minutos_espera} min. transcurridos)")
+                    print(f"⏳ [DRIVE]: Sigue procesando... ({minutos_espera} min. transcurridos)")
 
-            # Si llegamos a los 100 minutos y sigue procesando
-            print("\n⚠️ El video es muy largo y Google aún no termina.")
-            print("El análisis de Gemini deberá iniciarse manualmente.")
-            print(f"🔗 Podés revisarlo más tarde en: {link}")
+            print(f"\n⚠️ Drive tarda en procesar la vista previa, pero el link ya es válido: {link}")
         else:
             print("❌ Error en la subida a Drive.")
 
