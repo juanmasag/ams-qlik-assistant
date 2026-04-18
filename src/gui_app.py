@@ -206,7 +206,7 @@ class AppAsistente(ctk.CTk):
             self._al_entrar_mouse_btn_iniciar(None) 
             
             # Detener motor de grabación real
-            # if self.grabador: self.grabador.detener()
+            if self.grabador: self.grabador.detener()
         else:
             # --- INICIAR GRABACIÓN ---
             if self.seg_perfil.get() == "AMS":
@@ -226,8 +226,8 @@ class AppAsistente(ctk.CTk):
             self.log("Buscando carpeta en Drive...")
             self.log("▶ Iniciando motor de grabación (Video + Mic + System)...")
             
-            # self.grabador = GrabadorCorporativo()
-            # self.grabador.iniciar()
+            self.grabador = GrabadorCorporativo()
+            self.grabador.iniciar()
             
             self.esta_grabando = True
             self.segundos_grabacion = 0
