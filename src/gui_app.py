@@ -2,11 +2,14 @@ import customtkinter as ctk
 import time
 import sys
 import os
+import webbrowser
+import threading
 
 # Ajustamos rutas para importar tus módulos
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.grabador_corporativo import GrabadorCorporativo
 from src.config_manager import cargar_config
+from src.google_sheets import conectar_sheet, obtener_tickets_pendientes
 
 # Configuración de apariencia
 ctk.set_appearance_mode("Dark")
@@ -26,6 +29,10 @@ class AppAsistente(ctk.CTk):
         self.esta_grabando = False
         self.segundos_grabacion = 0
         
+        # Variables para almacenar rutas de la sesión actual
+        self.ruta_local_actual = ""
+        self.url_drive_actual = ""
+        
         # Variables de control UX
         self.mouse_en_input = False
         self.input_tiene_foco = False
@@ -40,8 +47,11 @@ class AppAsistente(ctk.CTk):
         self._crear_panel_progreso()
         self._crear_panel_log()
 
-        # SOLUCIÓN DE FOCO: Si hacés clic en el fondo, el input pierde el foco (excepto si hacés clic en el input)
+        # SOLUCIÓN DE FOCO: Si hacés clic en el fondo, el input pierde el foco
         self.bind("<Button-1>", self._quitar_foco)
+        
+        # INICIAR CARGA DE TICKETS EN SEGUNDO PLANO
+        self._iniciar_carga_tickets()
 
     def _quitar_foco(self, event):
         """Quita el foco solo si NO se hizo clic adentro de un cuadro de texto."""
@@ -58,7 +68,6 @@ class AppAsistente(ctk.CTk):
         self.frame_btn_container.pack(side="left", padx=(0, 20))
         self.frame_btn_container.pack_propagate(False)
 
-        # BOTÓN VACÍO: Desactivamos el hover nativo (hover=False) para controlarlo nosotros
         self.btn_rec = ctk.CTkButton(
             self.frame_btn_container, 
             text="", 
@@ -70,7 +79,6 @@ class AppAsistente(ctk.CTk):
         )
         self.btn_rec.place(x=0, y=0)
 
-        # ÍCONO FLOTANTE: Le asignamos exactamente el mismo color inicial que el botón
         self.icono_centro = ctk.CTkLabel(
             self.btn_rec, text="▶", text_color="white", font=ctk.CTkFont(size=32),
             fg_color="#27ae60" 
@@ -78,7 +86,6 @@ class AppAsistente(ctk.CTk):
         self.icono_centro.place(relx=0.54, rely=0.5, anchor="center")
         self.icono_centro.bind("<Button-1>", lambda e: self.toggle_grabacion())
 
-        # Textos al lado del botón
         frame_textos = ctk.CTkFrame(frame_top, fg_color="transparent")
         frame_textos.pack(side="left")
         frame_textos.bind("<Button-1>", self._quitar_foco)
@@ -92,7 +99,6 @@ class AppAsistente(ctk.CTk):
         self.lbl_timer = ctk.CTkLabel(frame_textos, text="00:00:00", text_color="gray", font=ctk.CTkFont(size=16))
         self.lbl_timer.pack(anchor="w")
         
-        # POPUP DE VALIDACIÓN INICIAL
         self.lbl_val_popup = ctk.CTkLabel(
             self, text="", fg_color="#f39c12", text_color="black", 
             corner_radius=4, height=22, font=ctk.CTkFont(size=11, weight="bold")
@@ -123,8 +129,10 @@ class AppAsistente(ctk.CTk):
         self.frame_input_container.pack(side="left", fill="x", expand=True)
 
         self.combo_ticket = ctk.CTkComboBox(
-            self.frame_input_container, width=280, values=["Despliegue para seleccionar ...", "CHG0051798 - Mapas Bolsa Cereales"]
+            self.frame_input_container, width=280, values=["⏳ Cargando tickets..."]
         )
+        self.combo_ticket.set("⏳ Cargando tickets...")
+        self.combo_ticket.configure(state="disabled")
         self.combo_ticket.bind("<<ComboboxSelected>>", self._al_interactuar_con_combo)
 
         self.var_texto = ctk.StringVar()
@@ -168,7 +176,10 @@ class AppAsistente(ctk.CTk):
         ctk.CTkLabel(frame_progreso, text="Análisis en Gemini", font=ctk.CTkFont(weight="bold")).grid(row=6, column=0, padx=15, pady=(5, 5), sticky="w")
         self.pb_gemini = ctk.CTkProgressBar(frame_progreso, width=550, progress_color="#3498db")
         self.pb_gemini.set(0)
-        self.pb_gemini.grid(row=7, column=0, padx=15, pady=(0, 15), sticky="w")
+        self.pb_gemini.grid(row=7, column=0, padx=15, pady=(0, 0), sticky="w")
+        
+        self.lbl_gemini_desc = ctk.CTkLabel(frame_progreso, text="", text_color="gray", font=ctk.CTkFont(size=11))
+        self.lbl_gemini_desc.grid(row=8, column=0, padx=15, pady=(0, 10), sticky="w")
 
     def _crear_panel_log(self):
         """Bloque inferior: Log de actividad."""
@@ -182,39 +193,159 @@ class AppAsistente(ctk.CTk):
         self.textbox_log.pack(fill="both", expand=True, padx=5, pady=5)
         self.log("Sistema de interfaz iniciado correctamente.")
 
+    # --- LÓGICA DE CARGA DE TICKETS (BACKGROUND) ---
+    def _iniciar_carga_tickets(self):
+        """Lanza el hilo para no congelar la UI mientras va a buscar los tickets a Google Sheets."""
+        hilo = threading.Thread(target=self._tarea_cargar_tickets, daemon=True)
+        hilo.start()
+
+    def _tarea_cargar_tickets(self):
+        """Función que corre en segundo plano para obtener los datos."""
+        try:
+            perfil_activo = self.config.get("PERFIL_ACTIVO", "GENERAL")
+            perfil_data = self.config["PERFILES"].get(perfil_activo, self.config["PERFILES"]["GENERAL"])
+            sheet_name = perfil_data.get("GOOGLE_SHEET")
+
+            if not sheet_name:
+                self.after(0, lambda: self._actualizar_combo_ui([]))
+                return
+
+            sheet = conectar_sheet(sheet_name)
+            if sheet:
+                tickets = obtener_tickets_pendientes(sheet)
+                lista_formateada = [f"{t.get('ID Ticket', 'S/N')} - {t.get('Título', 'Sin título')}" for t in tickets]
+                self.after(0, lambda: self._actualizar_combo_ui(lista_formateada))
+            else:
+                self.after(0, lambda: self._actualizar_combo_ui([]))
+        except Exception as e:
+            print(f"Error en hilo de carga de tickets: {e}")
+            self.after(0, lambda: self._actualizar_combo_ui([]))
+
+    def _actualizar_combo_ui(self, lista_tickets):
+        """Vuelve al hilo principal (UI) para actualizar visualmente el combobox."""
+        valores = ["Despliegue para seleccionar ..."]
+        if lista_tickets:
+            valores.extend(lista_tickets)
+            self.log(f"✅ Se cargaron {len(lista_tickets)} tickets pendientes desde Sheets.")
+        else:
+            self.log("ℹ️ No hay tickets pendientes en la base de datos.")
+            
+        self.combo_ticket.configure(values=valores, state="normal")
+        self.combo_ticket.set("Despliegue para seleccionar ...")
+
+    # --- EL PUENTE: Comunicación con el Backend ---
+    def _actualizar_ui(self, evento, mensaje):
+        """Recibe avisos del motor y actualiza la interfaz de forma segura."""
+        self.after(0, lambda: self._procesar_evento_ui(evento, mensaje))
+
+    def _procesar_evento_ui(self, evento, mensaje):
+        if evento == "log":
+            self.log(mensaje)
+        elif evento == "local_ok":
+            self.pb_local.set(1.0)
+            self.ruta_local_actual = mensaje
+            nombre_archivo = os.path.basename(mensaje)
+            # Link para abrir carpeta local
+            self.lbl_local_desc.configure(
+                text=f"✅ Guardado: {nombre_archivo} (Click para abrir carpeta)", 
+                text_color="#3498db",
+                cursor="hand2"
+            )
+            self.lbl_local_desc.bind("<Button-1>", lambda e: os.startfile(os.path.dirname(self.ruta_local_actual)))
+            
+        elif evento == "drive_ok":
+            self.pb_drive.set(1.0)
+            self.url_drive_actual = mensaje
+            # Link para abrir Drive
+            self.lbl_drive_desc.configure(
+                text="✅ Video disponible en Drive (Click para abrir link)", 
+                text_color="#3498db",
+                cursor="hand2"
+            )
+            self.lbl_drive_desc.bind("<Button-1>", lambda e: webbrowser.open(self.url_drive_actual))
+            
+        elif evento == "gemini_inicio":
+            self.pb_gemini.set(0.3)
+            self.lbl_gemini_desc.configure(text="Procesando...", text_color="gray")
+            self.log(f"🤖 {mensaje}")
+        elif evento == "gemini_progreso":
+            self.pb_gemini.set(0.6)
+            self.log(f"🤖 {mensaje}")
+        elif evento == "gemini_fin":
+            self.pb_gemini.set(1.0)
+            
+            # LÓGICA INTELIGENTE: Evaluamos si el mensaje indica un error o éxito
+            mensaje_min = mensaje.lower()
+            if "error" in mensaje_min or "fallo" in mensaje_min or "detenido" in mensaje_min:
+                self.lbl_gemini_desc.configure(text="❌ Proceso finalizado con errores", text_color="#e74c3c", cursor="")
+                self.lbl_gemini_desc.unbind("<Button-1>")
+                self.pb_gemini.configure(progress_color="#e74c3c") # Barra en rojo
+                self.log(f"⚠️ {mensaje}")
+            else:
+                self.log(f"🎉 {mensaje}")
+                # Extracción dinámica de la ruta del documento
+                if "creada en:" in mensaje:
+                    ruta_doc = mensaje.split("creada en:")[1].strip()
+                    self.lbl_gemini_desc.configure(
+                        text="✅ Documentación lista (Click para abrir carpeta)", 
+                        text_color="#3498db",
+                        cursor="hand2"
+                    )
+                    # El lambda usa r=ruta_doc para capturar el valor exacto en este momento
+                    self.lbl_gemini_desc.bind("<Button-1>", lambda e, r=ruta_doc: os.startfile(r))
+                else:
+                    self.lbl_gemini_desc.configure(text="✅ Documentación generada con éxito", text_color="#2ecc71", cursor="")
+                    self.lbl_gemini_desc.unbind("<Button-1>")
+            
+            # --- LIMPIEZA DE INICIO LIMPIO ---
+            # 1. PRIMERO despertamos los controles
+            self.seg_perfil.configure(state="normal")
+            self.combo_ticket.configure(state="normal")
+            self.entry_input.configure(state="normal")
+            
+            # 2. AHORA SÍ limpiamos los textos
+            self.var_texto.set("") # Limpia modo General
+            self.combo_ticket.set("Despliegue para seleccionar ...") # Resetea modo AMS
+            
+            # 3. Restaurar controles visuales y resetear el TIMER a 0
+            self.segundos_grabacion = 0
+            self.lbl_timer.configure(text="00:00:00")
+            
+            self.lbl_estado.configure(text="Iniciar Grabación", text_color="white")
+            self.icono_centro.configure(text="▶", font=ctk.CTkFont(size=32))
+            self._al_salir_mouse_btn_iniciar(None)
+            
+            self.seg_perfil.configure(state="normal")
+            self.combo_ticket.configure(state="normal")
+            self.entry_input.configure(state="normal")
+
     # --- LÓGICA DE LA INTERFAZ Y EVENTOS ---
 
     def log(self, mensaje):
-        """Escribe mensajes en la consola de la ventana."""
         hora = time.strftime("%H:%M:%S")
         self.textbox_log.insert("end", f"[{hora}] {mensaje}\n")
         self.textbox_log.see("end")
 
     def toggle_grabacion(self):
-        """Maneja el inicio y fin de la grabación."""
         if self.esta_grabando:
-            # --- DETENER GRABACIÓN ---
             self.esta_grabando = False
             self.log("Deteniendo motor de grabación...")
-            
             self.lbl_estado.configure(text="Consolidando...", text_color="#f39c12")
-            
             self.icono_centro.configure(text="⏳", font=ctk.CTkFont(size=24))
             self.icono_centro.place(relx=0.5, rely=0.5, anchor="center")
-            
-            # Forzamos el camuflaje visual al instante
             self._al_entrar_mouse_btn_iniciar(None) 
             
-            # Detener motor de grabación real
             if self.grabador: self.grabador.detener()
         else:
-            # --- INICIAR GRABACIÓN ---
+            ticket_data = {}
             if self.seg_perfil.get() == "AMS":
                 ticket = self.combo_ticket.get()
                 if not ticket or ticket == "Despliegue para seleccionar ...":
                     self.lbl_estado.configure(text="⚠️ Faltan datos", text_color="#f39c12")
                     self.log("⛔ Error: Debes seleccionar un ticket de la lista.")
                     return
+                partes = ticket.split(" - ", 1)
+                ticket_data = {"ID Ticket": partes[0].strip(), "Título": partes[1].strip() if len(partes)>1 else "", "Aplicacion": ""}
             else:
                 motivo = self.var_texto.get().strip()
                 if not motivo:
@@ -222,33 +353,45 @@ class AppAsistente(ctk.CTk):
                     self.log("⛔ Error: Coloque un nombre al video.")
                     self.entry_input.focus_set() 
                     return
+                ticket_data = {"ID Ticket": "GEN-" + time.strftime("%H%M%S"), "Título": motivo, "Aplicacion": "General"}
             
+            # Resetear UI para nueva grabación
+            self.pb_local.set(0)
+            self.lbl_local_desc.configure(text="Esperando...", text_color="gray", cursor="")
+            self.lbl_local_desc.unbind("<Button-1>")
+            
+            self.pb_drive.set(0)
+            self.lbl_drive_desc.configure(text="Esperando...", text_color="gray", cursor="")
+            self.lbl_drive_desc.unbind("<Button-1>")
+            
+            self.pb_gemini.set(0)
+            self.pb_gemini.configure(progress_color="#3498db") # Asegurar que la barra vuelva a ser azul
+            self.lbl_gemini_desc.configure(text="", text_color="gray", cursor="")
+            self.lbl_gemini_desc.unbind("<Button-1>")
+
             self.log("Buscando carpeta en Drive...")
             self.log("▶ Iniciando motor de grabación (Video + Mic + System)...")
             
-            self.grabador = GrabadorCorporativo()
+            self.grabador = GrabadorCorporativo(ticket_data=ticket_data, callback_ui=self._actualizar_ui)
             self.grabador.iniciar()
             
             self.esta_grabando = True
             self.segundos_grabacion = 0
+            self.lbl_timer.configure(text="00:00:00") # Reseteo por seguridad al arrancar
             
             self.lbl_estado.configure(text="Grabando...", text_color="#e74c3c")
-            
             self.icono_centro.configure(text="■", font=ctk.CTkFont(size=26)) 
             self.icono_centro.place(relx=0.5, rely=0.5, anchor="center") 
-            
             self.lbl_val_popup.place_forget()
+            
             self.seg_perfil.configure(state="disabled")
             self.combo_ticket.configure(state="disabled")
             self.entry_input.configure(state="disabled")
             
-            # Forzamos el camuflaje visual al instante
             self._al_entrar_mouse_btn_iniciar(None) 
-            
             self._actualizar_timer()
 
     def _actualizar_timer(self):
-        """Cronómetro de grabación."""
         if self.esta_grabando:
             minutos, segundos = divmod(self.segundos_grabacion, 60)
             horas, minutos = divmod(minutos, 60)
@@ -256,18 +399,11 @@ class AppAsistente(ctk.CTk):
             self.segundos_grabacion += 1
             self.after(1000, self._actualizar_timer)
 
-    # --- EVENTOS UX: CAMUFLAJE MANUAL DEL BOTÓN (Nuevo) ---
-
     def _al_entrar_mouse_btn_iniciar(self, event):
-        # Determinamos el color correcto para el efecto HOVER (mouse encima)
-        if self.lbl_estado.cget("text") == "Consolidando...":
-            color_fondo = "#7f8c8d"  # Gris Hover
-        elif self.esta_grabando:
-            color_fondo = "#c0392b"  # Rojo Hover
-        else:
-            color_fondo = "#2ecc71"  # Verde Hover
+        if self.lbl_estado.cget("text") == "Consolidando...": color_fondo = "#7f8c8d"  
+        elif self.esta_grabando: color_fondo = "#c0392b"  
+        else: color_fondo = "#2ecc71"  
             
-        # MAGIA: Pintamos el botón Y la etiqueta del mismo color exacto
         self.btn_rec.configure(fg_color=color_fondo)
         self.icono_centro.configure(fg_color=color_fondo)
 
@@ -280,22 +416,13 @@ class AppAsistente(ctk.CTk):
                 self.lbl_val_popup.place_forget()
 
     def _al_salir_mouse_btn_iniciar(self, event):
-        # Determinamos el color NORMAL (mouse fuera)
-        if self.lbl_estado.cget("text") == "Consolidando...":
-            color_fondo = "#7f8c8d"  # Gris Normal
-        elif self.esta_grabando:
-            color_fondo = "#d63b3b"  # Rojo Normal
-        else:
-            color_fondo = "#27ae60"  # Verde Normal
+        if self.lbl_estado.cget("text") == "Consolidando...": color_fondo = "#7f8c8d"  
+        elif self.esta_grabando: color_fondo = "#d63b3b"  
+        else: color_fondo = "#27ae60"  
             
-        # MAGIA: Revertimos ambos elementos juntos
         self.btn_rec.configure(fg_color=color_fondo)
         self.icono_centro.configure(fg_color=color_fondo)
-
         self.lbl_val_popup.place_forget()
-
-
-    # --- EVENTOS UX: PESTAÑAS E INPUTS (INTACTOS) ---
 
     def _al_cambiar_perfil(self, perfil):
         self.combo_ticket.pack_forget()
@@ -319,8 +446,7 @@ class AppAsistente(ctk.CTk):
 
     def _al_salir_mouse_input(self, event):
         self.mouse_en_input = False
-        if not self.input_tiene_foco:
-            self.lbl_contador_popup.place_forget()
+        if not self.input_tiene_foco: self.lbl_contador_popup.place_forget()
 
     def _al_ganar_foco_input(self, event):
         self.input_tiene_foco = True
@@ -330,8 +456,7 @@ class AppAsistente(ctk.CTk):
 
     def _al_perder_foco_input(self, event):
         self.input_tiene_foco = False
-        if not self.mouse_en_input:
-            self.lbl_contador_popup.place_forget()
+        if not self.mouse_en_input: self.lbl_contador_popup.place_forget()
 
     def _limitar_caracteres(self, *args):
         self._verificar_y_ocultar_popup_validacion()
@@ -349,8 +474,6 @@ class AppAsistente(ctk.CTk):
         color = "#c0392b" if restantes <= 5 else "#2c3e50"
         self.lbl_contador_popup.configure(text=f" {restantes}/50 ", fg_color=color)
 
-    # --- LÓGICA: POPUP DE VALIDACIÓN ---
-
     def _obtener_mensaje_validacion_faltante(self):
         if self.seg_perfil.get() == "AMS":
             ticket = self.combo_ticket.get()
@@ -358,15 +481,12 @@ class AppAsistente(ctk.CTk):
                 return "Seleccione un ticket de la lista"
         else:
             motivo = self.var_texto.get().strip()
-            if not motivo:
-                return "Coloque un nombre al video"
+            if not motivo: return "Coloque un nombre al video"
         return None 
 
     def _verificar_y_ocultar_popup_validacion(self):
-        if not self._obtener_mensaje_validacion_faltante():
-            self.lbl_val_popup.place_forget()
+        if not self._obtener_mensaje_validacion_faltante(): self.lbl_val_popup.place_forget()
 
 if __name__ == "__main__":
     app = AppAsistente()
     app.mainloop()
-    

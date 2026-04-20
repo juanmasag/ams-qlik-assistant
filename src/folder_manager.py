@@ -32,6 +32,7 @@ def crear_estructura_ticket(id_ticket, titulo_ticket, aplicacion):
 
     # 3. Construir las rutas usando la base dinámica
     ruta_app = os.path.join(DRIVE_PATH, app_limpia)
+    
     nombre_carpeta_ticket = f"[{id_ticket}] {titulo_limpio}"
     ruta_raiz_ticket = os.path.join(ruta_app, nombre_carpeta_ticket)
 
@@ -56,6 +57,7 @@ def crear_estructura_ticket(id_ticket, titulo_ticket, aplicacion):
             os.makedirs(ruta_raiz_ticket, exist_ok=True)
             for sub in subcarpetas:
                 os.makedirs(os.path.join(ruta_raiz_ticket, sub), exist_ok=True)
+          
             print(f"   ✅ Estructura del ticket {id_ticket} creada exitosamente.")
         else:
             print(f"   ℹ️ La carpeta del ticket ya existe. Saltando creación.")
@@ -79,7 +81,10 @@ def inicializar_documento_requerimiento(ruta_raiz, id_ticket, titulo_ticket):
     # Aseguramos que la carpeta 02 exista antes de copiar
     os.makedirs(ruta_doc, exist_ok=True)
     
-    nombre_archivo = f"[{id_ticket}] {titulo_ticket[:40]} - Documento de Requerimiento.docx"
+    # NUEVO: Limpiamos el título de caracteres inválidos para Windows antes de nombrar el archivo
+    titulo_limpio = re.sub(r'[\\/*?:"<>|]', "", titulo_ticket).replace(" ", "_")
+    
+    nombre_archivo = f"[{id_ticket}] {titulo_limpio[:40]} - Documento de Requerimiento.docx"
     destino_final = os.path.join(ruta_doc, nombre_archivo)
 
     if not os.path.exists(destino_final):

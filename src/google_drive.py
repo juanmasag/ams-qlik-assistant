@@ -5,33 +5,15 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from src.google_sheets import obtener_credenciales_usuario
+
 
 # Permisos: 'drive.file' permite subir archivos y ver solo los que la app creó
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 def obtener_servicio():
-    """Maneja la autenticación y devuelve el objeto para hablar con Drive."""
-    creds = None
-    # El archivo token.json guarda los permisos del usuario de forma local
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    
-    # Si no hay credenciales válidas, pedimos al usuario que inicie sesión
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # Aquí es donde se abre el navegador (necesitás credentials.json en la carpeta raíz)
-            if not os.path.exists('credentials.json'):
-                raise FileNotFoundError("⚠️ Error: Falta el archivo 'credentials.json'. Obtenelo en Google Cloud Console.")
-            
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        
-        # Guardamos el token para la próxima vez
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
+    """Maneja la autenticación unificada y devuelve el objeto para hablar con Drive."""
+    creds = obtener_credenciales_usuario() # Usamos la llave maestra corporativa
     return build('drive', 'v3', credentials=creds)
 
 def obtener_o_crear_carpeta_raiz(nombre_carpeta="Grabaciones AMS"):

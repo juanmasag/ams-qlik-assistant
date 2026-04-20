@@ -1,23 +1,21 @@
 import pandas as pd
 import gspread
-from google.oauth2.service_account import Credentials
 import os
 import glob
-from dotenv import load_dotenv
 from datetime import datetime
 
-load_dotenv()
+# Importamos la función de autenticación centralizada
+from src.google_sheets import obtener_credenciales_usuario
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PATH_CREDS = os.path.join(BASE_DIR, "config", "creds.json") 
-
-SCOPE = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
 
 SHEET_NAME = "AMS_BI_Assistant_Log"
 WORKSHEET_NAME = "Tickets_Activos"
+
+# Las 10 columnas oficiales
+COLUMNAS_SERVICENOW = ['ID Ticket', 'Título', 'Estado', 'Asignado Por', 'Horas Acum.', 'Ultima Sincro']
+COLUMNAS_MANUALES = ['Descripcion', 'Categoria', 'Aplicacion', 'Tipo de desarrollo']
+COLUMNAS_TOTALES = COLUMNAS_SERVICENOW + COLUMNAS_MANUALES
 
 def buscar_ultimo_csv():
     patron = os.path.join(BASE_DIR, "*.csv")
@@ -29,14 +27,21 @@ def buscar_ultimo_csv():
 
 def sincronizar_backlog():
     try:
-        if not os.path.exists(PATH_CREDS):
-            print(f"❌ Error: No se encontró la llave en: {PATH_CREDS}")
+        # 1. Autenticación con Token Personal
+        print("🔐 Verificando credenciales del usuario...")
+        creds = obtener_credenciales_usuario()
+        if not creds:
+            print("❌ Error: No se pudo autenticar al usuario.")
             return
-        
-        # 1. Conexión a Google Sheets para ver el histórico actual
-        creds = Credentials.from_service_account_file(PATH_CREDS, scopes=SCOPE)
+            
         client = gspread.authorize(creds)
-        spreadsheet = client.open(SHEET_NAME)
+        
+        try:
+            spreadsheet = client.open(SHEET_NAME)
+        except gspread.exceptions.SpreadsheetNotFound:
+            print(f"❌ Error: La planilla '{SHEET_NAME}' no existe aún.")
+            print("💡 Inicia la aplicación principal una vez para que se cree automáticamente.")
+            return
         
         try:
             worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
@@ -55,36 +60,61 @@ def sincronizar_backlog():
         print(f"📂 Procesando e integrando: {os.path.basename(archivo_path)}...")
         df_csv = pd.read_csv(archivo_path, encoding='utf-8-sig')
 
-        # 👉 LA REGLA DE ORO: Afuera los Canceled, adentro todo lo demás (Closed, New, etc.)
+        # Filtramos los cancelados
         df_csv = df_csv[df_csv['state'] != 'Canceled'].copy()
 
+        # Mapeamos las columnas de ServiceNow
         df_csv = df_csv[['number', 'short_description', 'state', 'opened_by', 'u_total_time_spent']]
         df_csv.columns = ['ID Ticket', 'Título', 'Estado', 'Asignado Por', 'Horas Acum.']
         df_csv['Horas Acum.'] = pd.to_numeric(df_csv['Horas Acum.'], errors='coerce').fillna(0)
         df_csv['Ultima Sincro'] = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-        # 3. UPSERT: Cruzar la nube con el CSV nuevo
+        # Agregamos las columnas manuales vacías al CSV (por si son tickets nuevos)
+        for col in COLUMNAS_MANUALES:
+            df_csv[col] = ""
+
+        # 3. UPSERT INTELIGENTE: Cruzar Nube y CSV protegiendo los datos manuales
         if not df_nube.empty:
+            # Aseguramos que la nube tenga todas las columnas oficiales
+            for col in COLUMNAS_TOTALES:
+                if col not in df_nube.columns:
+                    df_nube[col] = ""
+                    
             df_nube['Horas Acum.'] = pd.to_numeric(df_nube['Horas Acum.'], errors='coerce').fillna(0)
             
-            # Unimos todo y nos quedamos con la versión más reciente de cada ticket
-            df_combinado = pd.concat([df_nube, df_csv], ignore_index=True)
-            df_final = df_combinado.drop_duplicates(subset=['ID Ticket'], keep='last')
+            # Usamos el ID Ticket como índice para que Pandas sepa quién es quién
+            df_nube.set_index('ID Ticket', inplace=True)
+            df_csv.set_index('ID Ticket', inplace=True)
+            
+            # Actualizamos SOLO los datos automáticos de ServiceNow
+            cols_a_actualizar = ['Título', 'Estado', 'Asignado Por', 'Horas Acum.', 'Ultima Sincro']
+            df_nube.update(df_csv[cols_a_actualizar])
+            
+            # Identificamos tickets nuevos que vinieron en el CSV y no estaban en la nube
+            nuevos_ids = df_csv.index.difference(df_nube.index)
+            if not nuevos_ids.empty:
+                df_nuevos = df_csv.loc[nuevos_ids]
+                # Los agregamos al final
+                df_nube = pd.concat([df_nube, df_nuevos])
+                
+            df_final = df_nube.reset_index()
         else:
             df_final = df_csv
 
-        # Ordenamos: Activos arriba, Cerrados (histórico) abajo
+        # 4. Ordenar y Limpiar
+        # Mantenemos el orden estricto de las 10 columnas
+        df_final = df_final[COLUMNAS_TOTALES]
         df_final = df_final.sort_values(by=['Estado', 'ID Ticket'], ascending=[True, False])
         df_final = df_final.fillna("")
 
-        # 4. Subir a Google Sheets
+        # 5. Subir a Google Sheets
         data = [df_final.columns.values.tolist()] + df_final.values.tolist()
         worksheet.clear()
         worksheet.update(values=data, range_name='A1')
         
-        print(f"✅ ¡Histórico limpio actualizado! Total en la bóveda: {len(df_final)} tickets (sin cancelados).")
+        print(f"✅ ¡Histórico limpio actualizado! Total en la bóveda: {len(df_final)} tickets.")
 
-        # 5. Archivar CSV
+        # 6. Archivar CSV
         nuevo_nombre = os.path.join(BASE_DIR, f"PROCESADO_{datetime.now().strftime('%Y%m%d_%H%M')}_{os.path.basename(archivo_path)}")
         os.rename(archivo_path, nuevo_nombre)
 

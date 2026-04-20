@@ -56,7 +56,6 @@ def generar_minuta_ia(video_file, ticket_context=None, contexto_previo=""):
     ### TAREA Y REGLAS
     1. Genera la minuta enfocada en el análisis funcional.
     2. INSTRUCCIÓN MULTIMODAL CRÍTICA (PARTICIPANTES): Analiza visualmente los frames del video. Haz OCR sobre las etiquetas de texto en los recuadros de las cámaras. Excluye al consultor.
-    
     3. INSTRUCCIÓN "FAQ Y TERMINOLOGÍA" (QUIRÚRGICA Y MINIMALISTA):
        A. TERMINOLOGÍA DE NEGOCIO: Extrae SOLO conceptos exclusivos del negocio agropecuario o métricas afectadas por el Issue (ej. "Período Comercial", "Cosecha", "Compras Acumuladas").
           - PROHIBIDO definir términos IT estándar (como API, Excel, QVD, ETL, etc.).
@@ -64,7 +63,6 @@ def generar_minuta_ia(video_file, ticket_context=None, contexto_previo=""):
        B. FAQ ENFOCADA EN EL ISSUE: Genera máximo 3 preguntas/respuestas que aborden DIRECTAMENTE el problema discutido (ej. datos duplicados, inconsistencias).
           - No inventes dudas genéricas de BI.
           - Las respuestas deben ir directo a la solución o regla acordada.
-
     4. Devuelve ESTRICTAMENTE un formato JSON válido.
 
     ### JSON STRUCTURE
@@ -77,30 +75,43 @@ def generar_minuta_ia(video_file, ticket_context=None, contexto_previo=""):
     }}
     """
     
-    modelos_a_probar = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest']
+    modelos_a_probar = [
+    'gemini-2.5-pro',             # 1. MÁXIMA CALIDAD: El cerebro más potente. Lento, pero el más certero y analítico.
+    'gemini-2.5-flash',           # 2. ALTA CALIDAD: Excelente equilibrio si el Pro está saturado.
+    'gemini-2.0-flash',           # 3. CALIDAD MEDIA-ALTA: Generación anterior, muy robusto.
+    'gemini-2.5-flash-lite',      # 4. SALVAVIDAS: Baja la complejidad analítica, pero garantiza no fallar por saturación.
+    'gemini-flash-lite-latest'    # 5. ÚLTIMO RECURSO: Solo para evitar que la app se cuelgue si todo lo demás falla.
+]
 
     for modelo in modelos_a_probar:
-        try:
-            print(f"   🤖 Intentando con: {modelo}...")
-            response = client.models.generate_content(
-                model=modelo,
-                contents=[prompt, video_file],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
+        print(f"   🤖 Intentando con: {modelo}...")
+        # Bucle interno de reintentos
+        for intento in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=modelo,
+                    contents=[prompt, video_file],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
                 )
-            )
-            return response.text
-        except Exception as e:
-            error_msg = str(e)
-            if "404" in error_msg: continue
-            if "429" in error_msg or "503" in error_msg:
-                print(f"   ⏳ Google saturado. Reintentando en 10s...")
-                time.sleep(10)
-                continue
-            else:
-                raise e
+                return response.text
+            except Exception as e:
+                error_msg = str(e)
+                if "404" in error_msg: 
+                    break # Salimos del bucle de intentos, pasamos al siguiente modelo
+                if "429" in error_msg or "503" in error_msg:
+                    if intento < 2: # Si no es el último intento
+                        print(f"   ⏳ Google saturado (Intento {intento+1}/3). Esperando 20s para reintentar...")
+                        time.sleep(20)
+                        continue # Volvemos a intentar con el mismo modelo
+                    else:
+                        print(f"   ⚠️ Límite agotado para el modelo {modelo}.")
+                        break # Salimos del bucle de intentos, pasamos al siguiente modelo
+                else:
+                    raise e # Si es otro tipo de error, detenemos todo
 
-    raise Exception("❌ Ninguno de tus modelos habilitados pudo procesar el video.")
+    raise Exception("❌ Ninguno de tus modelos habilitados pudo procesar el video tras múltiples reintentos.")
 
 def consolidar_faqs(lista_faqs):
     """Consolida múltiples secciones de FAQ en un único bloque unificado y con formato estricto."""
@@ -119,9 +130,7 @@ def consolidar_faqs(lista_faqs):
     {texto_combinado}
     
     TAREA:
-    Unifica todo este contenido en un ÚNICO bloque cohesivo.
-    
-    FORMATO Y ESTRUCTURA ESTRICTA:
+    Unifica todo este contenido en un ÚNICO bloque cohesivo. FORMATO Y ESTRUCTURA ESTRICTA:
     Debes devolver el texto EXACTAMENTE con esta estructura (usa los mismos títulos una sola vez):
 
     ### TERMINOLOGÍA DE NEGOCIO
@@ -133,7 +142,7 @@ def consolidar_faqs(lista_faqs):
        * **Respuesta:** [Respuesta unificada].
     2. **[Pregunta 2]**
        * **Respuesta:** [Respuesta unificada].
-    
+
     REGLAS ESTRICTAS:
     1. Fusiona los conceptos repetidos.
     2. Mantén máximo 3-4 términos y 3 preguntas clave.
@@ -141,20 +150,29 @@ def consolidar_faqs(lista_faqs):
     4. Devuelve ÚNICAMENTE el texto final formateado, sin bloques de código ``` ni JSON.
     """
     
-    modelos_a_probar = ['gemini-2.5-flash', 'gemini-2.0-flash']
+    modelos_a_probar = [
+    'gemini-2.5-pro',             # 1. MÁXIMA CALIDAD: El cerebro más potente. Lento, pero el más certero y analítico.
+    'gemini-2.5-flash',           # 2. ALTA CALIDAD: Excelente equilibrio si el Pro está saturado.
+    'gemini-2.0-flash',           # 3. CALIDAD MEDIA-ALTA: Generación anterior, muy robusto.
+    'gemini-2.5-flash-lite',      # 4. SALVAVIDAS: Baja la complejidad analítica, pero garantiza no fallar por saturación.
+    'gemini-flash-lite-latest'    # 5. ÚLTIMO RECURSO: Solo para evitar que la app se cuelgue si todo lo demás falla.
+]
     for modelo in modelos_a_probar:
-        try:
-            response = client.models.generate_content(
-                model=modelo,
-                contents=[prompt]
-            )
-            # Limpiamos posibles formatos extra residuales
-            clean_text = response.text.replace("```markdown", "").replace("```", "").strip()
-            return clean_text
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "503" in error_msg:
-                time.sleep(5)
-                continue
+        for intento in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=modelo,
+                    contents=[prompt]
+                )
+                # Limpiamos posibles formatos extra residuales
+                clean_text = response.text.replace("```markdown", "").replace("```", "").strip()
+                return clean_text
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "503" in error_msg:
+                    if intento < 2:
+                        time.sleep(20)
+                        continue
+                break # Rompemos el bucle interno si es otro error o se agotaron los intentos
     
     return "\n\n".join(lista_faqs)

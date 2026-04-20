@@ -4,6 +4,7 @@ import re
 import shutil
 import json
 from datetime import datetime
+import unicodedata
 
 # 1. PARCHE DE RUTAS: Le decimos a Python dónde está la raíz del proyecto
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,13 +17,19 @@ from src.video_splitter import dividir_video
 from src.folder_manager import crear_estructura_ticket, inicializar_documento_requerimiento
 from src.doc_updater import actualizar_word_requerimiento
 
+def sanitizar_nombre(texto):
+    """Elimina acentos, eñes y caracteres inválidos para nombrar archivos de forma segura."""
+    if not texto: return "Sin_Titulo"
+    texto_limpio = ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
+    return re.sub(r'[\\/*?:"<>|]', "", texto_limpio).replace(" ", "_")
+
 def asegurar_string(dato):
     """Convierte cualquier dato de la IA en string, manejando listas."""
     if isinstance(dato, list):
         return "\n".join([str(item) for item in dato])
     return str(dato) if dato else ""
 
-def procesar_reunion(ruta_original, link_drive=""):
+def procesar_reunion(ruta_original, link_drive="", ticket_desde_gui=None, callback_ui=None):
     """
     Función Maestra: Orquesta la IA, los documentos y el log de Sheets.
     Recibe la ruta del video recién grabado y el link de Google Drive.
@@ -34,54 +41,29 @@ def procesar_reunion(ruta_original, link_drive=""):
     
     sheet_name = perfil_data.get("GOOGLE_SHEET")
     
-    print(f"\n🚀 Iniciando Asistente v2.0 - Perfil: {PERFIL_ACTIVO}...")
-    print(f"🎬 Procesando video local: {os.path.basename(ruta_original)}")
+    if callback_ui: callback_ui("log", f"🎬 Procesando video local: {os.path.basename(ruta_original)}")
 
-    # 4. SELECCIÓN DE TICKET (Interactivo)
-    sheet = None
-    tickets_pendientes = []
-    ticket_seleccionado = None
+    sheet = conectar_sheet(sheet_name) if sheet_name else None
 
-    if sheet_name:
-        print(f"📊 Conectando a la planilla: {sheet_name}...")
-        sheet = conectar_sheet(sheet_name)
-        if sheet:
-            try:
-                worksheet_activos = sheet.worksheet("Tickets_Activos")
-                tickets_pendientes = [t for t in worksheet_activos.get_all_records() if t.get('Estado') != 'Closed']
-            except: pass
+    # 4. SELECCIÓN DE TICKET (Ahora desde la GUI)
+    if ticket_desde_gui:
+        ticket_seleccionado = ticket_desde_gui
+    else:
+        # Fallback por si lo corrés a mano
+        ticket_seleccionado = {"ID Ticket": "PENDIENTE", "Aplicacion": "", "Título": "Relevamiento General"}
 
-        if tickets_pendientes:
-            while True:
-                print("\n📋 TICKETS ACTIVOS EN BACKLOG:")
-                for i, t in enumerate(tickets_pendientes):
-                    print(f"[{i+1}] {t.get('ID Ticket', 'N/A')} - {t.get('Aplicacion','')} - {t.get('Título', '')}")
-                opcion = input("\n👉 Selecciona el número (o Enter para manual): ")
-                if not opcion.strip(): break
-                try:
-                    idx = int(opcion) - 1
-                    if 0 <= idx < len(tickets_pendientes):
-                        ticket_seleccionado = tickets_pendientes[idx]
-                        break
-                except: pass
-
-    if not ticket_seleccionado:
-        print("\n📝 INGRESO MANUAL DE REUNIÓN")
-        tema_manual = input("👉 Tema de la reunión: ").strip()
-        app_manual = input("👉 Aplicación (opcional): ").strip()
-        ticket_seleccionado = {"ID Ticket": "PENDIENTE", "Aplicacion": app_manual, "Título": tema_manual if tema_manual else "Relevamiento General"}
-
-    # 5. FASE DE PROCESAMIENTO IA (Envía el video local directamente a Gemini)
-    print("\n--- INICIANDO FASE DE ANÁLISIS DE IA ---")
+    # 5. FASE DE PROCESAMIENTO IA (Blindaje Principal)
+    if callback_ui: callback_ui("gemini_inicio", "Iniciando análisis de IA...")
     minuta_final_json = ""
     respuestas_fragmentos = []
     id_ticket = str(ticket_seleccionado['ID Ticket'])
+    minuta_final_dict = {} # Inicializamos para asegurar acceso en la fase de documentación
     
     try:
         # Tu excelente función que evita el límite de tiempo de Gemini cortando el video en pedazos
         chunks = dividir_video(ruta_original, minutos_por_chunk=15)
         for i, chunk in enumerate(chunks):
-            print(f"⚙️ Analizando fragmento {i+1}/{len(chunks)} con Gemini...")
+            if callback_ui: callback_ui("gemini_progreso", f"Analizando fragmento {i+1}/{len(chunks)} con Gemini...")
             video_file = procesar_video_gemini(chunk)
             res_ia_raw = generar_minuta_ia(video_file, ticket_seleccionado)
             
@@ -95,13 +77,15 @@ def procesar_reunion(ruta_original, link_drive=""):
                 data = json.loads(clean_json)
                 respuestas_fragmentos.append(data[0] if isinstance(data, list) else data)
             except Exception as e:
-                print(f"⚠️ Error de parseo en fragmento {i+1}: {e}")
+                # Mejora del Try/Except interno del parseo JSON
+                if callback_ui: callback_ui("log", f"⚠️ Error de lectura en fragmento {i+1}: {e}")
                 respuestas_fragmentos.append({"MINUTA_DETALLE": res_ia_raw})
             
+        # Validación de salida de IA
         if not respuestas_fragmentos:
-            raise ValueError("La IA no devolvió datos.")
+            raise ValueError("La IA no devolvió datos válidos tras los reintentos.")
 
-        print(f"🔗 Combinando análisis de los {len(chunks)} fragmentos...")
+        if callback_ui: callback_ui("log", f"🔗 Combinando análisis de los {len(chunks)} fragmentos...")
         
         lista_p = []
         for r in respuestas_fragmentos:
@@ -124,12 +108,16 @@ def procesar_reunion(ruta_original, link_drive=""):
         minuta_final_json = json.dumps(minuta_final_dict, ensure_ascii=False, indent=4)
             
     except Exception as e:
-        print(f"\n❌ Error Crítico durante el análisis: {e}")
+        # Salvavidas para la interfaz gráfica en Fase IA
+        if callback_ui:
+            callback_ui("log", f"❌ Fallo en Gemini tras reintentos: {str(e)}")
+            callback_ui("gemini_fin", "Proceso detenido por error crítico en la IA.")
         return 
 
-    # 6. FASE DE ESCRITURA Y DOCUMENTACIÓN
-    print("\n--- INICIANDO FASE DE ESCRITURA ---")
+    # 6. FASE DE ESCRITURA Y DOCUMENTACIÓN (Blindaje Independiente)
     try:
+        if callback_ui: callback_ui("log", "📝 Generando documento Word...")
+        
         aplicacion_bruta = str(ticket_seleccionado.get('Aplicacion', '')).strip()
         titulo_bruto = str(ticket_seleccionado['Título'])
         titulo_para_carpeta = f"{aplicacion_bruta} - {titulo_bruto}" if aplicacion_bruta else titulo_bruto
@@ -141,16 +129,18 @@ def procesar_reunion(ruta_original, link_drive=""):
         dt = datetime.fromtimestamp(os.path.getmtime(ruta_original))
         timestamp, fecha_reunion = dt.strftime("%Y%m%d_%H%M"), dt.strftime("%d/%m/%Y")
         
-        titulo_limpio = re.sub(r'[\\/*?:"<>|]', "", titulo_bruto).replace(" ", "_")
+        # Limpiamos acentos y caracteres inválidos
+        titulo_limpio = sanitizar_nombre(titulo_bruto)
         nombre_dinamico = f"{id_ticket}_{titulo_limpio}_{timestamp}"
         nuevo_nombre_video = f"{nombre_dinamico}.mp4"
         
         try:
             # Renombramos el archivo local de "GRABACION_XXX" al formato corporativo
             os.rename(ruta_original, nuevo_nombre_video)
-        except Exception as e:
-            print(f"⚠️ Aviso: No se pudo renombrar el video local ({e})")
+        except Exception:
+            pass
 
+        ruta_md = ""
         if ruta_word_oficial:
             actualizar_word_requerimiento(ruta_word_oficial, minuta_final_json, id_ticket, titulo_para_carpeta, fecha_reunion)
             ruta_md = os.path.join(ruta_raiz_drive, "01_Relevamiento", f"Minuta_{nombre_dinamico}.md")
@@ -158,18 +148,33 @@ def procesar_reunion(ruta_original, link_drive=""):
                 f.write(f"**Link del Video en la Nube:** {link_drive}\n\n")
                 f.write(minuta_final_json)
 
-        if sheet and id_ticket != "PENDIENTE":
-            registrar_log(sheet, [datetime.now().strftime("%Y-%m-%d %H:%M"), nuevo_nombre_video, "OK", "Procesado", f"Minuta_{nombre_dinamico}.md"])
+        # Registro en Log de Google Sheets (Estructura de 5 columnas)
+        if sheet and id_ticket != "PENDIENTE" and "GEN-" not in id_ticket:
+            # 4. Resumen Ejecutivo: Extraer OBJETIVO y recortar a 150 chars
+            resumen_ejecutivo = minuta_final_dict.get("OBJETIVO", "Sin objetivo definido")
+            if len(resumen_ejecutivo) > 150:
+                resumen_ejecutivo = resumen_ejecutivo[:150] + "..."
+            
+            # 5. Link Minuta: link_drive o fallback a ruta local
+            link_final = link_drive if link_drive else f"Local: {ruta_md}"
+
+            datos_log = [
+                datetime.now().strftime("%Y-%m-%d %H:%M"), # 1. Fecha_Procesamiento
+                nuevo_nombre_video,                         # 2. Nombre_Video
+                "OK",                                       # 3. Status
+                resumen_ejecutivo,                          # 4. Resumen_Ejecutivo
+                link_final                                  # 5. Link_Minuta
+            ]
+            registrar_log(sheet, datos_log)
         
         shutil.rmtree("data/temp", ignore_errors=True)
-        print(f"\n🎉 ¡Todo listo! Documentación creada exitosamente en: {ruta_raiz_drive}")
+        if callback_ui: callback_ui("gemini_fin", f"¡Todo listo! Documentación creada en: {ruta_raiz_drive}")
 
     except Exception as e:
-        print(f"\n❌ Error en escritura: {e}")
+        # Manejo de errores en Fase de Documentación
+        if callback_ui:
+            callback_ui("log", f"❌ Error en generación de documentos: {e}")
+            callback_ui("gemini_fin", "Proceso finalizado con errores en documentación.")
 
 if __name__ == "__main__":
     print("ℹ️ Este módulo ahora funciona como Director de Orquesta y debe ser llamado por el grabador.")
-    # Prueba manual de emergencia
-    ruta = input("Para forzar una prueba, pega la ruta local de un video y presiona Enter (o deja vacío para salir): ").strip('"')
-    if ruta and os.path.exists(ruta):
-        procesar_reunion(ruta, "Link_de_Prueba")
