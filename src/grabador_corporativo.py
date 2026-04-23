@@ -133,7 +133,7 @@ class GrabadorCorporativo:
         cmd_final = [
             self.ffmpeg_exe, '-y',
             '-i', temp_video, '-i', temp_audio_mic, '-i', temp_audio_spk,
-            '-filter_complex', '[1:a][2:a]amix=inputs=2:duration=first[aout]',
+            '-filter_complex', '[1:a][2:a]amix=inputs=2:duration=longest[aout]',
             '-map', '0:v', '-map', '[aout]',
             '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', output_final
         ]
