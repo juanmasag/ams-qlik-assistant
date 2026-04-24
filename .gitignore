@@ -5,6 +5,7 @@ config.json
 .env
 credentials.json
 token.json
+token.pickle
 *.mp4
 *.wav
 __pycache__/

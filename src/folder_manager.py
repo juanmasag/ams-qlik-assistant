@@ -1,103 +1,62 @@
-import os
-import shutil
 import re
-from src.config_manager import cargar_config
+import unicodedata
+from src.google_drive import obtener_o_crear_subcarpeta, obtener_id_raiz
 
-# Cargamos la configuración global
-config = cargar_config()
-PERFIL_ACTIVO = config.get("PERFIL_ACTIVO", "GENERAL")
-perfil_data = config["PERFILES"].get(PERFIL_ACTIVO, config["PERFILES"]["GENERAL"])
+def sanitizar_nombre_carpeta(texto):
+    """Elimina acentos, eñes y caracteres inválidos para nombrar carpetas de forma segura."""
+    if not texto: return "Sin_Titulo"
+    texto_limpio = ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
+    return re.sub(r'[\\/*?:"<>|]', "", texto_limpio).replace(" ", "_")
 
-# 1. Definimos las rutas base dinámicamente
-# DRIVE_PATH ahora es el OUTPUT_PATH del perfil (Ej: G:/Mi unidad/PROYECTOS_AMS)
-DRIVE_PATH = perfil_data.get("OUTPUT_PATH", "./data/output")
-# TEMPLATE_PATH se arma con la carpeta de templates + el nombre del archivo del perfil
-FOLDER_TEMPLATES = config["RUTAS_LOCALES"].get("TEMPLATES", "./templates")
-NOMBRE_TEMPLATE = perfil_data.get("TEMPLATE", "PLANTILLA_REQ.docx")
-TEMPLATE_PATH = os.path.join(FOLDER_TEMPLATES, NOMBRE_TEMPLATE)
-
-def crear_estructura_ticket(id_ticket, titulo_ticket, aplicacion):
+def obtener_carpetas_destino(ticket_data=None, perfil="AMS", custom_folder_id=None):
     """
-    Crea la jerarquía: Aplicacion > Ticket > 4 Subcarpetas.
-    Usa la ruta base definida en el perfil activo del config.json.
+    Calcula y crea (si no existen) las carpetas en Google Drive según el perfil.
+    Retorna un diccionario con los IDs de destino para grabaciones y documentos.
     """
-    # 1. Limpiar strings de caracteres inválidos en Windows
-    titulo_limpio = re.sub(r'[\\/*?:"<>|]', "", titulo_ticket).replace(" ", "_")
     
-    # 2. Manejo de la Aplicación (Agrupador Principal)
-    if not aplicacion or str(aplicacion).strip() == "None" or str(aplicacion).strip() == "":
-        app_limpia = "General_Sin_Aplicacion"
-    else:
-        app_limpia = re.sub(r'[\\/*?:"<>|]', "", str(aplicacion)).strip()
+    # ---------------------------------------------------------
+    # CASO 1: PERFIL GENERAL (Navegación Libre - Los nuevos "Superpoderes")
+    # ---------------------------------------------------------
+    if perfil != "AMS":
+        # Si el usuario eligió una carpeta en la interfaz, usamos ese ID.
+        # Si por algún motivo falló, usamos el ID Maestro como fallback de seguridad.
+        destino_id = custom_folder_id if custom_folder_id else obtener_id_raiz()
+        
+        print(f"📁 Modo GENERAL activo. Guardando en carpeta ID: {destino_id}")
+        
+        # Devolvemos el MISMO ID para todo, así se guarda "plano" sin subcarpetas
+        return {
+            "01_Grabacion": destino_id,
+            "02_Documentacion": destino_id,
+            "03_Entregables": destino_id,
+            "04_Otros": destino_id
+        }
 
-    # 3. Construir las rutas usando la base dinámica
-    ruta_app = os.path.join(DRIVE_PATH, app_limpia)
+    # ---------------------------------------------------------
+    # CASO 2: PERFIL AMS (Estructura Jerárquica Automatizada)
+    # ---------------------------------------------------------
+    print("📁 Modo AMS activo. Construyendo árbol de directorios en la nube...")
+    id_padre_maestro = obtener_id_raiz() 
+
+    # Nivel 1: Carpeta de Aplicación (Extraída del Sheet, ej: "Viterra")
+    app_bruta = ticket_data.get("Aplicacion", "General") if ticket_data else "General"
+    app_limpia = sanitizar_nombre_carpeta(app_bruta)
+    id_app = obtener_o_crear_subcarpeta(app_limpia, id_padre_maestro)
+
+    # Nivel 2: Carpeta del Ticket (Ej: "GEN-8822_Error_Carga")
+    id_ticket_str = str(ticket_data.get("ID Ticket", "SR-PENDIENTE")) if ticket_data else "SR-PENDIENTE"
+    titulo_bruto = str(ticket_data.get("Título", "Relevamiento")) if ticket_data else "Relevamiento"
+    titulo_limpio = sanitizar_nombre_carpeta(titulo_bruto)
     
-    nombre_carpeta_ticket = f"[{id_ticket}] {titulo_limpio}"
-    ruta_raiz_ticket = os.path.join(ruta_app, nombre_carpeta_ticket)
+    nombre_carpeta_ticket = f"{id_ticket_str}_{titulo_limpio}"
+    id_ticket = obtener_o_crear_subcarpeta(nombre_carpeta_ticket, id_app)
 
-    # 4. Definir subcarpetas oficiales
-    subcarpetas = [
-        "01_Relevamiento",
-        "02_Documentacion",
-        "03_Entregables_Tecnicos",
-        "04_Pasaje_Produccion"
-    ]
-
-    print(f"📁 Organizando en la ruta: '{DRIVE_PATH}'...")
-    print(f"📂 Carpeta de Aplicación: '{app_limpia}'")
-
-    # 5. Crear estructura de carpetas física
-    try:
-        if not os.path.exists(ruta_app):
-            os.makedirs(ruta_app, exist_ok=True)
-            print(f"   📂 Nueva subcarpeta de Aplicación creada.")
-
-        if not os.path.exists(ruta_raiz_ticket):
-            os.makedirs(ruta_raiz_ticket, exist_ok=True)
-            for sub in subcarpetas:
-                os.makedirs(os.path.join(ruta_raiz_ticket, sub), exist_ok=True)
-          
-            print(f"   ✅ Estructura del ticket {id_ticket} creada exitosamente.")
-        else:
-            print(f"   ℹ️ La carpeta del ticket ya existe. Saltando creación.")
-            
-    except Exception as e:
-        print(f"   ❌ Error al crear carpetas en el destino: {e}")
-        # Si falla el destino (ej: G: no conectado), intentamos en local por seguridad
-        print("   ⚠️ Intentando crear estructura en carpeta local './data/fallback'...")
-        ruta_raiz_ticket = os.path.join("./data/fallback", nombre_carpeta_ticket)
-        os.makedirs(ruta_raiz_ticket, exist_ok=True)
-
-    return ruta_raiz_ticket
-
-def inicializar_documento_requerimiento(ruta_raiz, id_ticket, titulo_ticket):
-    """
-    Copia la plantilla .docx a la carpeta 02_Documentacion con el nombre correcto.
-    La plantilla se elige según el perfil activo.
-    """
-    ruta_doc = os.path.join(ruta_raiz, "02_Documentacion")
+    # Nivel 3: Subcarpetas Estándar (01, 02, 03, 04)
+    carpetas_ids = {}
+    subcarpetas = ["01_Grabacion", "02_Documentacion", "03_Entregables", "04_Otros"]
     
-    # Aseguramos que la carpeta 02 exista antes de copiar
-    os.makedirs(ruta_doc, exist_ok=True)
-    
-    # NUEVO: Limpiamos el título de caracteres inválidos para Windows antes de nombrar el archivo
-    titulo_limpio = re.sub(r'[\\/*?:"<>|]', "", titulo_ticket).replace(" ", "_")
-    
-    nombre_archivo = f"[{id_ticket}] {titulo_limpio[:40]} - Documento de Requerimiento.docx"
-    destino_final = os.path.join(ruta_doc, nombre_archivo)
+    for sub in subcarpetas:
+        # Se crean dentro del ID del ticket y guardamos sus IDs
+        carpetas_ids[sub] = obtener_o_crear_subcarpeta(sub, id_ticket)
 
-    if not os.path.exists(destino_final):
-        try:
-            if os.path.exists(TEMPLATE_PATH):
-                shutil.copy2(TEMPLATE_PATH, destino_final)
-                print(f"   📄 Plantilla '{NOMBRE_TEMPLATE}' inicializada: {nombre_archivo}")
-            else:
-                print(f"   ⚠️ No se encontró la plantilla en {TEMPLATE_PATH}.")
-                print(f"   👉 Asegurate de tener el archivo en la carpeta '{FOLDER_TEMPLATES}'")
-        except Exception as e:
-            print(f"   ❌ Error al copiar la plantilla: {e}")
-    else:
-        print(f"   ℹ️ El Documento de Requerimiento ya existe. No se sobrescribió.")
-    
-    return destino_final
+    return carpetas_ids

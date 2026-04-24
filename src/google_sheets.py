@@ -131,3 +131,20 @@ def obtener_tickets_pendientes(sheet, nombre_pestana="Tickets_Activos"):
         return pendientes
     except Exception as e:
         return []
+
+def obtener_tickets_usuario():
+    """Función puente para que la interfaz gráfica obtenga los tickets directamente."""
+    from src.config_manager import cargar_config
+    try:
+        config = cargar_config()
+        nombre_sheet = config["PERFILES"]["AMS"]["GOOGLE_SHEET"]
+        
+        sheet = conectar_sheet(nombre_sheet)
+        if not sheet:
+            return []
+            
+        # Reutilizamos tu función existente
+        return obtener_tickets_pendientes(sheet)
+    except Exception as e:
+        print(f"Error obteniendo tickets para la UI: {e}")
+        return []

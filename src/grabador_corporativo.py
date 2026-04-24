@@ -13,9 +13,10 @@ import warnings
 import re
 import unicodedata
 
-# Nuevos imports
+# Importamos las funciones actualizadas
 from src.main import procesar_reunion
-from src.google_drive import subir_archivo_drive, obtener_o_crear_carpeta_raiz, esta_video_procesado
+from src.google_drive import subir_archivo_drive, esta_video_procesado
+from src.folder_manager import obtener_carpetas_destino
 
 warnings.filterwarnings("ignore", message="data discontinuity in recording")
 
@@ -29,17 +30,27 @@ def sanitizar_nombre(texto):
     texto_limpio = ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
     return re.sub(r'[\\/*?:"<>|]', "", texto_limpio).replace(" ", "_")
 
+def obtener_dispositivos_audio():
+    """Obtiene diccionarios de micrófonos y altavoces disponibles en Windows para la UI."""
+    try:
+        mics = sc.all_microphones()
+        spks = sc.all_speakers()
+        lista_mics = {m.name: m.id for m in mics}
+        lista_spks = {s.name: s.id for s in spks}
+        return lista_mics, lista_spks
+    except Exception as e:
+        print(f"Error obteniendo dispositivos: {e}")
+        return {}, {}
+
 class GrabadorCorporativo:
-    def __init__(self, folder_id=None, ticket_data=None, callback_ui=None):
+    def __init__(self, ticket_data=None, callback_ui=None, mic_id=None, spk_id=None, perfil="AMS", custom_folder_id=None):
         self.ticket_data = ticket_data
         self.callback_ui = callback_ui
+        self.mic_id = mic_id
+        self.spk_id = spk_id
+        self.perfil = perfil
+        self.custom_folder_id = custom_folder_id
         
-        if not folder_id:
-            if self.callback_ui: self.callback_ui("log", "🔍 Buscando carpeta en Drive...")
-            self.folder_id_drive = obtener_o_crear_carpeta_raiz()
-        else:
-            self.folder_id_drive = folder_id
-            
         self.grabando = False
         self.filename_base = ""
         self.ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -61,15 +72,12 @@ class GrabadorCorporativo:
     def _grabar_motor(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         
-        # --- NUEVA LÓGICA DE BAUTISMO CORPORATIVO ---
         if self.ticket_data:
             id_ticket = str(self.ticket_data.get("ID Ticket", "PENDIENTE"))
             titulo_bruto = str(self.ticket_data.get("Título", "Relevamiento"))
-            # Limpiamos los caracteres inválidos y acentos para que Windows/Gemini no colapsen
             titulo_limpio = sanitizar_nombre(titulo_bruto)
             self.filename_base = f"{id_ticket}_{titulo_limpio}_{timestamp}"
         else:
-            # Fallback por seguridad
             self.filename_base = f"GRABACION_{timestamp}"
 
         temp_audio_mic = f"{self.filename_base}_mic.wav"
@@ -87,8 +95,12 @@ class GrabadorCorporativo:
         proc_video = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.grabando = True
 
-        t_mic = threading.Thread(target=self._grabar_audio_stream, args=(sc.default_microphone(), temp_audio_mic, 4.0))
-        t_spk = threading.Thread(target=self._grabar_audio_stream, args=(sc.get_microphone(sc.default_speaker().id, include_loopback=True), temp_audio_spk, 1.0))
+        # Selección de dispositivos de audio (Aplica los elegidos en la interfaz)
+        mic_device = sc.get_microphone(self.mic_id) if self.mic_id else sc.default_microphone()
+        spk_device = sc.get_microphone(self.spk_id, include_loopback=True) if self.spk_id else sc.get_microphone(sc.default_speaker().id, include_loopback=True)
+
+        t_mic = threading.Thread(target=self._grabar_audio_stream, args=(mic_device, temp_audio_mic, 4.0))
+        t_spk = threading.Thread(target=self._grabar_audio_stream, args=(spk_device, temp_audio_spk, 1.0))
         t_mic.start()
         t_spk.start()
 
@@ -128,8 +140,9 @@ class GrabadorCorporativo:
             t_mic.join()
             t_spk.join()
 
-        if self.callback_ui: self.callback_ui("log", "⏹ Consolidando audio y video con FFmpeg...")
+        if self.callback_ui: self.callback_ui("log", "⏹ Consolidando audio y video...")
 
+        # MIX DE AUDIO: fix applied -> duration=longest
         cmd_final = [
             self.ffmpeg_exe, '-y',
             '-i', temp_video, '-i', temp_audio_mic, '-i', temp_audio_spk,
@@ -148,21 +161,32 @@ class GrabadorCorporativo:
     def _asegurar_en_nube(self, ruta_archivo):
         if self.callback_ui: self.callback_ui("local_ok", ruta_archivo)
 
-        # HILO SECUNDARIO PARA QUE LA UI NO SE CONGELE
+        # 1. Calculamos dónde debe guardarse el video en la nube
+        if self.callback_ui: self.callback_ui("log", "📁 Evaluando estructura en Drive...")
+        carpetas = obtener_carpetas_destino(self.ticket_data, self.perfil, self.custom_folder_id)
+        id_carpeta_video = carpetas.get("01_Grabacion")
+
+        
+        # 2. Usamos el ID de la carpeta '02_Documentacion' que el grabador ya descubrió unos pasos arriba
+        # (Asegúrate de que la variable de arriba se llame 'carpetas', o ajusta el nombre si se llama distinto)
+        id_docs = carpetas.get("02_Documentacion") if carpetas else self.custom_folder_id
+        
+        # 2. Hilo secundario para analizar con IA y crear Doc (agregamos id_docs al final)
         hilo_ia = threading.Thread(
             target=procesar_reunion, 
-            args=(ruta_archivo, "Generando link en Drive...", self.ticket_data, self.callback_ui)
+            args=(ruta_archivo, "Generando link en Drive...", self.ticket_data, self.callback_ui, self.custom_folder_id, id_docs)
         )
         hilo_ia.start()
 
-        if self.callback_ui: self.callback_ui("log", "☁️ Subiendo a Google Drive...")
+        # 3. Subir el video a su carpeta final
+        if self.callback_ui: self.callback_ui("log", "☁️ Subiendo video a Google Drive...")
+        file_id, link = subir_archivo_drive(ruta_archivo, id_carpeta_video)
         
-        file_id, link = subir_archivo_drive(ruta_archivo, self.folder_id_drive)
         if file_id:
             if self.callback_ui: self.callback_ui("drive_ok", link)
-            if self.callback_ui: self.callback_ui("log", f"✅ Archivo disponible en nube: {link}")
+            if self.callback_ui: self.callback_ui("log", f"✅ Video disponible en nube: {link}")
         else:
-            if self.callback_ui: self.callback_ui("log", "❌ Error subiendo a Drive.")
+            if self.callback_ui: self.callback_ui("error", "❌ Error subiendo a Drive.")
 
     def iniciar(self):
         if not self.grabando:
