@@ -13,10 +13,8 @@ import warnings
 import re
 import unicodedata
 
-# Importamos las funciones actualizadas
-from src.main import procesar_reunion
-from src.google_drive import subir_archivo_drive, esta_video_procesado
-from src.folder_manager import obtener_carpetas_destino
+# 🛡️ FASE 2: Importamos exclusivamente el gestor de la cola
+from src.cola_manager import agregar_a_cola
 
 warnings.filterwarnings("ignore", message="data discontinuity in recording")
 
@@ -70,15 +68,27 @@ class GrabadorCorporativo:
             if self.callback_ui: self.callback_ui("log", f"⚠️ Error en stream de audio ({filename}): {e}")
 
     def _grabar_motor(self):
+        # 🛡️ FIX: Leemos la ruta configurada en el Onboarding (Ej: C:\Users\Usuario\Videos\AsistenteIA)
+        from src.config_manager import cargar_config
+        config = cargar_config()
+        ruta_destino = config.get("RUTAS_LOCALES", {}).get("RECORDINGS", "")
+        
+        # Salvavidas: si por algún motivo la ruta falla o se borró, vuelve a usar la raíz del proyecto
+        if not ruta_destino or not os.path.exists(ruta_destino):
+            ruta_destino = os.getcwd()
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         
         if self.ticket_data:
             id_ticket = str(self.ticket_data.get("ID Ticket", "PENDIENTE"))
             titulo_bruto = str(self.ticket_data.get("Título", "Relevamiento"))
             titulo_limpio = sanitizar_nombre(titulo_bruto)
-            self.filename_base = f"{id_ticket}_{titulo_limpio}_{timestamp}"
+            nombre_archivo = f"{id_ticket}_{titulo_limpio}_{timestamp}"
         else:
-            self.filename_base = f"GRABACION_{timestamp}"
+            nombre_archivo = f"GRABACION_{timestamp}"
+
+        # Unimos la ruta absoluta con el nombre del archivo para fijar el destino final
+        self.filename_base = os.path.join(ruta_destino, nombre_archivo)
 
         temp_audio_mic = f"{self.filename_base}_mic.wav"
         temp_audio_spk = f"{self.filename_base}_spk.wav"
@@ -160,33 +170,24 @@ class GrabadorCorporativo:
 
     def _asegurar_en_nube(self, ruta_archivo):
         if self.callback_ui: self.callback_ui("local_ok", ruta_archivo)
-
-        # 1. Calculamos dónde debe guardarse el video en la nube
-        if self.callback_ui: self.callback_ui("log", "📁 Evaluando estructura en Drive...")
-        carpetas = obtener_carpetas_destino(self.ticket_data, self.perfil, self.custom_folder_id)
-        id_carpeta_video = carpetas.get("01_Grabacion")
-
         
-        # 2. Usamos el ID de la carpeta '02_Documentacion' que el grabador ya descubrió unos pasos arriba
-        # (Asegúrate de que la variable de arriba se llame 'carpetas', o ajusta el nombre si se llama distinto)
-        id_docs = carpetas.get("02_Documentacion") if carpetas else self.custom_folder_id
+        if self.callback_ui: self.callback_ui("log", "📝 Registrando grabación en la cola de pendientes...")
         
-        # 2. Hilo secundario para analizar con IA y crear Doc (agregamos id_docs al final)
-        hilo_ia = threading.Thread(
-            target=procesar_reunion, 
-            args=(ruta_archivo, "Generando link en Drive...", self.ticket_data, self.callback_ui, self.custom_folder_id, id_docs)
-        )
-        hilo_ia.start()
-
-        # 3. Subir el video a su carpeta final
-        if self.callback_ui: self.callback_ui("log", "☁️ Subiendo video a Google Drive...")
-        file_id, link = subir_archivo_drive(ruta_archivo, id_carpeta_video)
-        
-        if file_id:
-            if self.callback_ui: self.callback_ui("drive_ok", link)
-            if self.callback_ui: self.callback_ui("log", f"✅ Video disponible en nube: {link}")
-        else:
-            if self.callback_ui: self.callback_ui("error", "❌ Error subiendo a Drive.")
+        try:
+            # 🛡️ FASE 2: Pasamos a la cola, el motor de fondo (`main.py`) se encargará de Drive y Gemini
+            id_item = agregar_a_cola(
+                ruta_video=ruta_archivo,
+                ticket_data=self.ticket_data,
+                custom_folder_id=self.custom_folder_id,
+                perfil=self.perfil
+            )
+            if self.callback_ui: self.callback_ui("log", "✅ Video encolado exitosamente. Listo para iniciar otra reunión.")
+            
+            # Avisamos a la UI que ya terminó la parte local y está seguro en la cola
+            if self.callback_ui: self.callback_ui("en_cola", id_item)
+            
+        except Exception as e:
+            if self.callback_ui: self.callback_ui("error", f"Error al encolar el video: {e}")
 
     def iniciar(self):
         if not self.grabando:

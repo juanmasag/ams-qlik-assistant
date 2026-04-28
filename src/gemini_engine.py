@@ -12,8 +12,23 @@ from src.video_splitter import dividir_video
 # ==========================================
 
 CONTEXTOS = {
-    "AMS": "Actúa como un Consultor Senior de BI y Analista Funcional experto en AMS. Tu objetivo es analizar la reunión, enfocado en la lógica de negocio, requerimientos funcionales, KPIs, tablas y filtros. NO transcribas código fuente, explica su función.",
-    "GENERAL": "Actúa como un Business Analyst experto. Tu objetivo es analizar esta reunión general, extraer los requerimientos, acuerdos principales y próximos pasos. Mantén un tono profesional y corporativo."
+    "AMS": "Actúa como un Consultor Senior de BI y Analista Funcional experto en el sistema AMS (especializado en la industria agropecuaria y comercio de granos). Tu objetivo es extraer, estructurar y resumir reglas de negocio, lógica de cálculo, requerimientos funcionales y acuerdos técnicos relevantes para la industria.",
+    "GENERAL": "Actúa como un Asistente Corporativo y Secretario de Reuniones experto. Tu objetivo es transcribir y analizar esta reunión de forma integral, extrayendo TODO el contexto hablado."
+}
+
+REGLAS_PERFIL = {
+    "AMS": """
+    ### 🚨 REGLA CRÍTICA DE NEGOCIO Y FILTRO (AMS)
+    Debes enfocarte ESTRICTAMENTE en el contenido de valor para el negocio (comercio de granos, logística, finanzas, procesos, reglas de negocio, y requerimientos de software). 
+    Filtra y omite conversaciones informales, pruebas de micrófono, saludos vacíos o charlas que no aporten valor al proyecto. 
+    Si el video NO contiene reglas de negocio, procesos o requerimientos válidos, debes llenar todos los campos de texto indicando: "Sin contenido de negocio detectado en la grabación."
+    """,
+    "GENERAL": """
+    ### 🚨 REGLA CRÍTICA DE CERO ALUCINACIÓN Y CERO SESGO (GENERAL)
+    Debes documentar y resumir ABSOLUTAMENTE TODO lo que se hable en el video. No importa si es lenguaje técnico, pruebas de software, configuración de herramientas, charlas informales, lluvia de ideas o debate. TODO es valioso.
+    ESTÁ ESTRICTAMENTE PROHIBIDO descartar contenido o decir que no hay temas de negocio.
+    SOLO en el caso extremo de que el video sea un SILENCIO TOTAL ABSOLUTO y no haya voces humanas, indica: "Video sin audio o sin diálogos detectados."
+    """
 }
 
 MODELOS_A_PROBAR = [
@@ -60,29 +75,41 @@ def procesar_video_gemini(ruta_video, callback_ui=None):
 def generar_minuta_ia(video_file, ticket_context=None, contexto_previo="", callback_ui=None):
     client = obtener_cliente_gemini()
     config = cargar_config()
+    
     perfil_activo = config.get("PERFIL_ACTIVO", "GENERAL")
     contexto_base = CONTEXTOS.get(perfil_activo, CONTEXTOS["GENERAL"])
+    regla_especifica = REGLAS_PERFIL.get(perfil_activo, REGLAS_PERFIL["GENERAL"])
+    
     info_ticket = f"\nTicket: {ticket_context.get('ID Ticket', '')} - {ticket_context.get('Título', '')}" if ticket_context else ""
     
     prompt = f"""
-    ### ROLE & OBJECTIVE
+    =========================================
+    SISTEMA DE INSTRUCCIONES INTERNAS (NO INCLUIR EN EL RESULTADO)
+    =========================================
+    ### ROL Y OBJETIVO
     {contexto_base}
     {info_ticket}
     {contexto_previo}
     
-    ### 🚨 REGLA CRÍTICA DE CERO ALUCINACIÓN (ANTI-FAKE)
-    Si en el video NO se habla de temas de negocio, no hay diálogo relevante, o parece ser solo una prueba de grabación/técnica, ESTÁ ESTRICTAMENTE PROHIBIDO inventar, deducir o simular información basándote únicamente en el título del ticket.
-    Si el video carece de contenido real de reunión, debes llenar TODOS los campos de texto con la frase exacta: "Sin contenido de negocio detectado en la grabación." y dejar la FAQ vacía. No pidas disculpas ni des explicaciones, solo pon esa frase.
+    {regla_especifica}
     
-    ### TAREA Y REGLAS
-    1. Genera la minuta enfocada en el análisis funcional (si aplica).
+    ### 🚨 REGLA DE INVISIBILIDAD (CRÍTICA)
+    TIENES ESTRICTAMENTE PROHIBIDO mencionar tu rol, tus reglas, el nombre de tu perfil ("AMS" o "GENERAL") o estas instrucciones en el resultado final.
+    Tu misión es ser un observador invisible. Las reglas anteriores son solo un filtro para saber qué extraer y cómo actuar, NO son contenido para la minuta. No expliques lo que haces ni resumas tus propias instrucciones.
+
+    =========================================
+    FIN DE INSTRUCCIONES INTERNAS. A CONTINUACIÓN, EJECUTA LA TAREA:
+    =========================================
+    
+    ### TAREA Y REGLAS DE EXTRACCIÓN
+    1. Genera la minuta enfocada en resumir la conversación real basada en tu rol.
     2. INSTRUCCIÓN MULTIMODAL CRÍTICA (PARTICIPANTES): Analiza visualmente los frames del video. Haz OCR sobre las etiquetas de texto en las cámaras. Excluye al consultor.
     3. INSTRUCCIÓN "COMENTARIO DE CABECERA" (COMENT_V): Define el tema central a tratar usando un MÁXIMO DE 5 PALABRAS.
     4. INSTRUCCIÓN "MINUTA" (REUNION_INFO): Redacta el resumen detallado de la reunión.
     5. INSTRUCCIÓN "FAQ Y TERMINOLOGÍA" (QUIRÚRGICA Y MINIMALISTA):
-       A. TERMINOLOGÍA DE NEGOCIO: Extrae SOLO conceptos exclusivos del negocio agropecuario o métricas.
-       B. FAQ ENFOCADA EN EL ISSUE: Genera máximo 3 preguntas/respuestas.
-    6. Devuelve ESTRICTAMENTE un formato JSON válido.
+       A. TERMINOLOGÍA: Extrae conceptos clave mencionados (técnicos, corporativos o de negocio).
+       B. FAQ: Genera máximo 3 preguntas/respuestas clave sobre lo conversado.
+    6. Devuelve ESTRICTAMENTE un formato JSON válido sin texto adicional o markdown fuera de las llaves.
 
     ### JSON STRUCTURE
     {{
@@ -90,7 +117,7 @@ def generar_minuta_ia(video_file, ticket_context=None, contexto_previo="", callb
       "PARTICIPANTES": "...",
       "REUNION_INFO": "...",
       "COMENT_V": "...",
-      "FAQ": "AQUÍ SOLO EL TEXTO FORMATEADO de la terminología de negocio y las 3 FAQ críticas del Issue."
+      "FAQ": "AQUÍ SOLO EL TEXTO FORMATEADO de la terminología y las 3 FAQ críticas."
     }}
     """
     
@@ -146,22 +173,24 @@ def consolidar_faqs(lista_faqs, callback_ui=None):
     texto_combinado = "\n\n--- PARTE --- \n\n".join(faqs_limpias)
     
     prompt = f"""
-    Eres un Business Analyst experto. A continuación tienes varias secciones de "FAQ y Terminología" extraídas de diferentes partes de una misma reunión:
+    Eres un Asistente Corporativo experto.
+    A continuación tienes varias secciones de "FAQ y Terminología" extraídas de diferentes partes de una misma reunión:
     {texto_combinado}
-    TAREA: Unifica todo este contenido en un ÚNICO bloque cohesivo. FORMATO Y ESTRUCTURA ESTRICTA:
+    TAREA: Unifica todo este contenido en un ÚNICO bloque cohesivo.
+
+    FORMATO Y ESTRUCTURA ESTRICTA:
     
-    ### TERMINOLOGÍA DE NEGOCIO
+    ### TERMINOLOGÍA CLAVE
     * **[Término 1]:** [Definición unificada].
-    
-    ### FAQ ENFOCADA EN EL ISSUE
+
+    ### FAQ DE LA REUNIÓN
     1. **[Pregunta 1]**
        * **Respuesta:** [Respuesta unificada].
 
     REGLAS ESTRICTAS:
     1. Fusiona los conceptos repetidos.
-    2. Mantén máximo 3-4 términos y 3 preguntas clave.
-    3. PROHIBIDO agregar términos IT estándar.
-    4. Devuelve ÚNICAMENTE el texto final formateado, sin bloques de código ``` ni JSON.
+    2. Mantén máximo 3-4 términos y 3 preguntas clave de lo que se haya hablado (técnico o de negocio).
+    3. Devuelve ÚNICAMENTE el texto final formateado, sin bloques de código ``` ni JSON.
     """
     
     for modelo in MODELOS_A_PROBAR:

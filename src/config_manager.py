@@ -11,22 +11,22 @@ def obtener_config_inicial():
         "GEMINI_API_KEY": "",
         "PERFIL_ACTIVO": "AMS",
         "PERFILES": {
-            "AMS_VITERRA": {
+            "AMS": {
                 "MODO": "AMS",
                 "GOOGLE_SHEET": "AMS_BI_Assistant_Log",
                 "TEMPLATE": "PLANTILLA_REQ.docx",
-                "OUTPUT_PATH": "G:/Mi unidad/PROYECTOS_AMS"
+                "OUTPUT_PATH": ""
             },
             "GENERAL": {
                 "MODO": "GENERAL",
                 "GOOGLE_SHEET": None,
                 "TEMPLATE": "PLANTILLA_REQ.docx",
-                "OUTPUT_PATH": "./data/minutes"
+                "OUTPUT_PATH": ""
             }
         },
         "RUTAS_LOCALES": {
-            "RECORDINGS": "G:/Mi unidad/GRABACIONES AMS",
-            "TEMPLATES": "./templates"
+            "RECORDINGS": "",
+            "TEMPLATES": ""
         }
     }
 
